@@ -1,0 +1,91 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function role() {
+      return userDoc().role;
+    }
+
+    function isOfficial() {
+      return isSignedIn() && (role() == 'official' || role() == 'admin');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && role() == 'admin';
+    }
+
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isOfficial());
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'resident';
+      allow update: if isSignedIn() && (
+        (request.auth.uid == uid
+          && request.resource.data.role == resource.data.role)
+        || isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /incidents/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow update: if isSignedIn() && (
+        (resource.data.reporterId == request.auth.uid
+          && resource.data.status == 'pending'
+          && request.resource.data.status == 'pending')
+        || isOfficial()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /alerts/{id} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isOfficial();
+    }
+
+    match /announcements/{id} {
+      allow read: if isSignedIn();
+
+      // Any signed-in user may post. Author must match the caller, and
+      // non-officials cannot pin (only officials/admins can publish pinned
+      // posts).
+      allow create: if isSignedIn()
+        && request.resource.data.authorId == request.auth.uid
+        && (request.resource.data.pinned == false || isOfficial());
+
+      // Authors can edit/delete their own post; officials/admins can moderate
+      // anyone's. Non-officials still can't pin via an update.
+      allow update: if isSignedIn() && (
+        (resource.data.authorId == request.auth.uid
+          && (request.resource.data.pinned == resource.data.pinned || isOfficial()))
+        || isOfficial()
+      );
+      allow delete: if isSignedIn()
+        && (resource.data.authorId == request.auth.uid || isOfficial());
+
+      match /comments/{cid} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+        allow update, delete: if isSignedIn()
+          && (resource.data.authorId == request.auth.uid || isOfficial());
+      }
+    }
+
+    match /barangays/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
